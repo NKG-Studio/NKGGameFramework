@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/nkg-icon-master.png" alt="NKGGameFramework · GF" width="360" />
+</p>
+
 # NKGGameFramework
 
 NKGGameFramework 是一个不依赖具体游戏引擎的 C# 游戏框架底层。核心运行时、模块系统、事件、池化、ECS、资源/场景抽象、异步和序列化都放在纯 .NET 层；Unity、Godot、Server 或 Web Debug Host 只通过 Adapter/Hosting 接入。
