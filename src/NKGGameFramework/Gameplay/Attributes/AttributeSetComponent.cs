@@ -7,7 +7,10 @@ namespace NKGGameFramework.Gameplay;
 // plus transient modifiers (re-applied by buffs/skills each load).
 public sealed class GameplayAttributeInstance
 {
-    private readonly List<AttributeModifier> _modifiers = [];
+    [NonSerialized] private List<AttributeModifier>? _modifiers;
+    [NonSerialized] private bool _evaluating;
+    [OdinSerialize] private double _baseValue;
+    private List<AttributeModifier> MutableModifiers => _modifiers ??= [];
 
     public GameplayAttributeInstance(
         GameplayAttribute attribute,
@@ -20,7 +23,7 @@ public sealed class GameplayAttributeInstance
             throw new ArgumentException("Attribute must be valid.", nameof(attribute));
         }
 
-        if (maxValue < minValue)
+        if (double.IsNaN(minValue) || double.IsNaN(maxValue) || maxValue < minValue)
         {
             throw new ArgumentOutOfRangeException(nameof(maxValue), "Max value cannot be less than min value.");
         }
@@ -31,66 +34,113 @@ public sealed class GameplayAttributeInstance
         MaxValue = maxValue;
     }
 
-    public GameplayAttribute Attribute { get; }
+    [OdinSerialize] public GameplayAttribute Attribute { get; }
 
-    public double BaseValue { get; set; }
+    public double BaseValue
+    {
+        get => _baseValue;
+        set => _baseValue = double.IsFinite(value) ? value : throw new ArgumentOutOfRangeException(nameof(value));
+    }
 
-    public double MinValue { get; set; }
+    [OdinSerialize] public double MinValue { get; set; }
 
-    public double MaxValue { get; set; }
+    [OdinSerialize] public double MaxValue { get; set; }
 
-    public IReadOnlyList<AttributeModifier> Modifiers => _modifiers;
+    [field: NonSerialized] public AttributeCapture? Minimum { get; set; }
+
+    [field: NonSerialized] public AttributeCapture? Maximum { get; set; }
+
+    public IReadOnlyList<AttributeModifier> Modifiers => MutableModifiers.AsReadOnly();
 
     public double CurrentValue => Evaluate();
 
-    // Evaluation order: a later Override replaces the whole result and ignores
-    // base and all other operations; otherwise base + sum(Add) then product
-    // (Multiply); finally clamped to [MinValue, MaxValue].
+    // Channels ascend; within each channel: (input + sum(Add)) * product(Multiply),
+    // or the last Override. Insertion order only breaks ties between overrides.
     public double Evaluate()
     {
-        // A later Override replaces the whole result and ignores base and all
-        // other operations.
-        for (var i = _modifiers.Count - 1; i >= 0; i--)
+        if (_evaluating) throw new InvalidOperationException($"Cyclic attribute dependency at '{Attribute}'.");
+        _evaluating = true;
+        try
         {
-            if (_modifiers[i].Operation == AttributeModifierOperation.Override)
+            var value = BaseValue;
+            var modifiers = MutableModifiers;
+            for (var i = 0; i < modifiers.Count;)
             {
-                return Math.Clamp(_modifiers[i].Magnitude, MinValue, MaxValue);
+                var channel = modifiers[i].Channel;
+                double add = 0, multiply = 1;
+                double? replace = null;
+                do
+                {
+                    var modifier = modifiers[i++];
+                    var magnitude = modifier.EvaluateMagnitude();
+                    if (!double.IsFinite(magnitude)) throw new InvalidOperationException($"Modifier for '{Attribute}' overflowed.");
+                    switch (modifier.Operation)
+                    {
+                        case AttributeModifierOperation.Add: add += magnitude; break;
+                        case AttributeModifierOperation.Multiply: multiply *= magnitude; break;
+                        case AttributeModifierOperation.Override: replace = magnitude; break;
+                    }
+                } while (i < modifiers.Count && modifiers[i].Channel == channel);
+                value = replace ?? (value + add) * multiply;
+                if (!double.IsFinite(value)) throw new InvalidOperationException($"Attribute '{Attribute}' overflowed.");
             }
+            return Clamp(value);
         }
+        finally { _evaluating = false; }
+    }
 
-        var value = BaseValue;
-        foreach (var modifier in _modifiers)
+    private double Clamp(double value)
+    {
+        var min = Minimum?.Value ?? MinValue;
+        var max = Maximum?.Value ?? MaxValue;
+        if (double.IsNaN(min) || double.IsNaN(max) || min > max)
+            throw new InvalidOperationException($"Invalid bounds for '{Attribute}'.");
+        return Math.Clamp(value, min, max);
+    }
+
+    // Instant changes persist in base; removing a buff must not undo damage or healing.
+    public double ApplyInstant(AttributeModifierOperation operation, double magnitude)
+    {
+        if (!double.IsFinite(magnitude)) throw new ArgumentOutOfRangeException(nameof(magnitude));
+        var previous = CurrentValue;
+        var value = operation switch
         {
-            switch (modifier.Operation)
-            {
-                case AttributeModifierOperation.Add:
-                    value += modifier.Magnitude;
-                    break;
-                case AttributeModifierOperation.Multiply:
-                    value *= modifier.Magnitude;
-                    break;
-            }
-        }
-
-        return Math.Clamp(value, MinValue, MaxValue);
+            AttributeModifierOperation.Add => BaseValue + magnitude,
+            AttributeModifierOperation.Multiply => BaseValue * magnitude,
+            AttributeModifierOperation.Override => magnitude,
+            _ => throw new ArgumentOutOfRangeException(nameof(operation))
+        };
+        if (!double.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(magnitude));
+        var previousBase = BaseValue;
+        BaseValue = Clamp(value);
+        try { return CurrentValue - previous; }
+        catch { BaseValue = previousBase; throw; }
     }
 
     public void ApplyModifier(AttributeModifier modifier)
     {
         ArgumentNullException.ThrowIfNull(modifier);
-        _modifiers.Add(modifier);
+        modifier.Validate();
+        if (modifier.Attribute != Attribute) throw new ArgumentException("Modifier targets a different attribute.", nameof(modifier));
+        var modifiers = MutableModifiers;
+        if (modifiers.Contains(modifier)) throw new InvalidOperationException("Modifier is already applied.");
+        var index = modifiers.FindIndex(m => m.Channel > modifier.Channel);
+        modifiers.Insert(index < 0 ? modifiers.Count : index, modifier);
     }
+
+    public bool RemoveModifier(AttributeModifier handle) => MutableModifiers.Remove(handle);
 
     public bool RemoveModifiers(object source)
     {
         ArgumentNullException.ThrowIfNull(source);
 
         var removed = false;
-        for (var i = _modifiers.Count - 1; i >= 0; i--)
+        var modifiers = MutableModifiers;
+        for (var i = modifiers.Count - 1; i >= 0; i--)
         {
-            if (ReferenceEquals(_modifiers[i].Source, source))
+            if (ReferenceEquals(modifiers[i].Source, source))
             {
-                _modifiers.RemoveAt(i);
+                modifiers.RemoveAt(i);
                 removed = true;
             }
         }
@@ -143,6 +193,8 @@ public struct AttributeSetComponent : IComponent
         double minValue = double.NegativeInfinity,
         double maxValue = double.PositiveInfinity)
     {
+        if (!attribute.IsValid || !double.IsFinite(baseValue) || double.IsNaN(minValue) || double.IsNaN(maxValue) || minValue > maxValue)
+            throw new ArgumentException("Invalid attribute definition.");
         if (TryGet(attribute, out var existing))
         {
             existing.BaseValue = baseValue;
@@ -191,6 +243,18 @@ public struct AttributeSetComponent : IComponent
         }
 
         return removed;
+    }
+
+    public bool RemoveModifier(AttributeModifier handle)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        return TryGet(handle.Attribute, out var instance) && instance.RemoveModifier(handle);
+    }
+
+    public double ApplyInstant(GameplayAttribute attribute, AttributeModifierOperation operation, double magnitude)
+    {
+        if (!TryGet(attribute, out var instance)) throw new KeyNotFoundException($"Attribute '{attribute}' is not present.");
+        return instance.ApplyInstant(operation, magnitude);
     }
 
     public bool RemoveModifiers(GameplayAttribute attribute, object source)

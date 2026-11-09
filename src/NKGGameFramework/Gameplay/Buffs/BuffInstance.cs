@@ -43,6 +43,13 @@ public sealed class BuffInstance
 
     public BuffState State { get; internal set; } = BuffState.Waiting;
 
+    public bool IsActive { get; internal set; }
+
+    public bool IsSuppressed { get; private set; }
+
+    // Suppression is reconciled by BuffUpdateSystem; the lifetime clock keeps running.
+    public void SetSuppressed(bool suppressed) => IsSuppressed = suppressed;
+
     [field: NonSerialized]
     public object? UserState { get; set; }
 
@@ -52,7 +59,7 @@ public sealed class BuffInstance
 
     internal void Refresh(int stacks)
     {
-        Stacks = Math.Clamp(Stacks + stacks, 1, Definition.MaxStacks);
+        Stacks = (int)Math.Clamp((long)Stacks + stacks, 1, Definition.MaxStacks);
 
         if (Definition.RefreshPolicy == BuffStackRefreshPolicy.RefreshDuration)
         {

@@ -9,10 +9,18 @@ public interface IBuffEffect
     void OnUpdate(BuffEffectContext context);
 
     void OnRemove(BuffEffectContext context);
+
+    void OnActivate(BuffEffectContext context) { }
+
+    void OnDeactivate(BuffEffectContext context) { }
 }
 
 public abstract class BuffEffect : IBuffEffect
 {
+    public virtual void OnActivate(BuffEffectContext context) { }
+
+    public virtual void OnDeactivate(BuffEffectContext context) { }
+
     public virtual void OnApply(BuffEffectContext context)
     {
     }

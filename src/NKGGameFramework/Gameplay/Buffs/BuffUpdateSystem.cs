@@ -49,6 +49,11 @@ public sealed class BuffUpdateSystem : EcsSystem
 
                     if (buff.State == BuffState.Finished)
                     {
+                        if (buff.IsActive)
+                        {
+                            buff.IsActive = false;
+                            effect.OnDeactivate(effectContext);
+                        }
                         effect.OnRemove(effectContext);
                         if (buff.ExecutionTreeInstance is { } behaviorTree)
                         {
@@ -104,8 +109,8 @@ public sealed class BuffUpdateSystem : EcsSystem
 
         if (buff.State == BuffState.Waiting)
         {
+            buff.ClearPendingRefresh();
             effect.OnApply(context);
-            StartExecutionTree(scene, context, behaviorActions, behaviorTreesToStart);
             scene.Events.Publish(new BuffApplied(
                 context.Target.ToRef(),
                 buff.Source,
@@ -113,14 +118,14 @@ public sealed class BuffUpdateSystem : EcsSystem
                 buff.Level,
                 buff.Stacks));
 
-            buff.State = buff.Definition.Duration switch
+            if (buff.State == BuffState.Waiting) buff.State = buff.Definition.Duration switch
             {
                 null => BuffState.Forever,
                 { } duration when duration == TimeSpan.Zero => BuffState.Finished,
                 _ => BuffState.Running,
             };
         }
-        else if (buff.PendingRefresh)
+        else if (buff.State != BuffState.Finished && buff.PendingRefresh)
         {
             buff.ClearPendingRefresh();
             effect.OnRefresh(context);
@@ -134,12 +139,23 @@ public sealed class BuffUpdateSystem : EcsSystem
 
         if (buff.State is BuffState.Running or BuffState.Forever)
         {
-            effect.OnUpdate(context);
+            if (buff.IsActive == buff.IsSuppressed)
+            {
+                buff.IsActive = !buff.IsSuppressed;
+                if (buff.IsActive)
+                {
+                    effect.OnActivate(context);
+                    if (buff.State != BuffState.Finished && buff.ExecutionTreeInstance is null)
+                        StartExecutionTree(scene, context, behaviorActions, behaviorTreesToStart);
+                }
+                else effect.OnDeactivate(context);
+            }
+            if (buff.IsActive && buff.State != BuffState.Finished) effect.OnUpdate(context);
             buff.Tick(context.DeltaTime);
 
             if (buff.ExecutionTreeInstance is { } behaviorTree)
             {
-                if (buff.State is BuffState.Running or BuffState.Forever)
+                if (buff.IsActive && buff.State is BuffState.Running or BuffState.Forever)
                 {
                     behaviorTreesToUpdate.Add(behaviorTree);
                 }
