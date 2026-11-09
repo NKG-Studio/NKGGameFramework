@@ -215,4 +215,24 @@ public sealed class AttributeChannelTests
         Assert.Equal(1, removes);
         Assert.Empty(target.Get<BuffCollectionComponent>().Buffs);
     }
+
+    [Fact]
+    public void Zero_duration_still_pairs_activation_and_deactivation()
+    {
+        using var scene = new Scene("instant-lifetime");
+        var events = new List<string>();
+        scene.Systems.Add(new BuffUpdateSystem(new BuffEffectRegistry().Register("lifecycle", new LifecycleEffect(events))));
+        var target = scene.CreateEntity();
+        BuffManager.Apply(target, target, new() { Id = "zero", EffectKey = "lifecycle", Duration = TimeSpan.Zero });
+        scene.Update(0, 0);
+        Assert.Equal(new[] { "added", "active", "inactive", "removed" }, events);
+    }
+
+    private sealed class LifecycleEffect(List<string> events) : BuffEffect
+    {
+        public override void OnApply(BuffEffectContext context) => events.Add("added");
+        public override void OnActivate(BuffEffectContext context) => events.Add("active");
+        public override void OnDeactivate(BuffEffectContext context) => events.Add("inactive");
+        public override void OnRemove(BuffEffectContext context) => events.Add("removed");
+    }
 }

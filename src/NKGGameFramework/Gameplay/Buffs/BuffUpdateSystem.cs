@@ -111,6 +111,13 @@ public sealed class BuffUpdateSystem : EcsSystem
         {
             buff.ClearPendingRefresh();
             effect.OnApply(context);
+            if (buff.State != BuffState.Finished && !buff.IsSuppressed)
+            {
+                buff.IsActive = true;
+                effect.OnActivate(context);
+                if (buff.State != BuffState.Finished)
+                    StartExecutionTree(scene, context, behaviorActions, behaviorTreesToStart);
+            }
             scene.Events.Publish(new BuffApplied(
                 context.Target.ToRef(),
                 buff.Source,
